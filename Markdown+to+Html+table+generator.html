@@ -53,6 +53,7 @@ iframe{flex:1;width:100%;border:0;background:#fff;min-height:340px}
 #code{background:var(--code);color:var(--code-ink)}
 .pane.drag{outline:3px dashed var(--accent);outline-offset:-6px}
 .hint{padding:8px 14px;color:var(--muted);font-size:.85rem;border-bottom:1px solid var(--line)}
+select{font:inherit;padding:4px 8px;border:1px solid var(--line);border-radius:6px;background:var(--panel);color:var(--ink)}
 .toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%) translateY(20px);background:var(--ink);color:var(--bg);
   padding:10px 18px;border-radius:999px;font-weight:600;opacity:0;pointer-events:none;transition:opacity .2s,transform .2s}
 .toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
@@ -79,6 +80,18 @@ iframe{flex:1;width:100%;border:0;background:#fff;min-height:340px}
   <section class="pane" id="inPane" aria-labelledby="inLabel">
     <div class="pane-head"><h2 id="inLabel">Your document</h2><span class="meta" id="inMeta">0 characters</span></div>
     <div class="opts">
+      <label>Output style
+        <select id="preset" aria-label="Output style">
+          <option value="standard">Standard (keep bold, italic, links)</option>
+          <option value="promo">Promo terms (plain text lists)</option>
+        </select>
+      </label>
+    </div>
+    <div class="opts">
+      <label><input type="checkbox" id="optFmt" checked> Keep bold &amp; italic</label>
+      <label><input type="checkbox" id="optLinks" checked> Keep links</label>
+      <label><input type="checkbox" id="optListP"> Wrap list items in &lt;p&gt;</label>
+      <label><input type="checkbox" id="optAuto"> Auto-link plain URLs</label>
       <label><input type="checkbox" id="optFull"> Full HTML page (no CSS)</label>
       <label><input type="checkbox" id="optBreaks"> Match pasted spacing (line breaks, indents, blank lines)</label>
     </div>
@@ -155,10 +168,14 @@ iframe{flex:1;width:100%;border:0;background:#fff;min-height:340px}
     'Unsafe input is neutralized: <script>alert("xss")<\/script> and [click me](javascript:alert(1)) are made harmless.'
   ].join('\n');
 
+  // Output settings (read from the checkboxes before every conversion)
+  var cfg = { fmt: true, links: true, listP: false, autoLink: false };
+
   /* ---------- Sanitizing helpers ---------- */
   function esc(s) {
-    return String(s).replace(/[&<>"']/g, function (c) {
-      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+    // attributes are always double-quoted, so a plain ' is safe and stays readable
+    return String(s).replace(/[&<>"]/g, function (c) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c];
     });
   }
   // Allow only http(s), mailto, tel, anchors and relative links.
@@ -172,12 +189,13 @@ iframe{flex:1;width:100%;border:0;background:#fff;min-height:340px}
 
   /* ---------- Inline parsing ---------- */
   function emphasis(t) {
+    function tag(n, x) { return cfg.fmt ? '<' + n + '>' + x + '</' + n + '>' : x; }
     return t
-      .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
-      .replace(/(^|[^\w])__(?!\s)(.+?)(?<!\s)__(?!\w)/g, '$1<strong>$2</strong>')
-      .replace(/\*(?!\s)(.+?)(?<!\s)\*/g, '<em>$1</em>')
-      .replace(/(^|[^\w])_(?!\s)(.+?)(?<!\s)_(?!\w)/g, '$1<em>$2</em>')
-      .replace(/~~(.+?)~~/g, '<del>$1</del>');
+      .replace(/\*\*(.+?)\*\*/g, function (_, x) { return tag('strong', x); })
+      .replace(/(^|[^\w])__(?!\s)(.+?)(?<!\s)__(?!\w)/g, function (_, p, x) { return p + tag('strong', x); })
+      .replace(/\*(?!\s)(.+?)(?<!\s)\*/g, function (_, x) { return tag('em', x); })
+      .replace(/(^|[^\w])_(?!\s)(.+?)(?<!\s)_(?!\w)/g, function (_, p, x) { return p + tag('em', x); })
+      .replace(/~~(.+?)~~/g, function (_, x) { return tag('del', x); });
   }
 
   function inline(src, keepBreaks) {
@@ -198,16 +216,17 @@ iframe{flex:1;width:100%;border:0;background:#fff;min-height:340px}
     s = s.replace(/\[([^\]]+)\]\(([^)\s]+)(?:\s+"([^"]*)")?\)/g, function (_, text, url, title) {
       var u = safeUrl(url, false);
       var label = emphasis(esc(text));
-      if (!u) return keep(label);
+      if (!u || !cfg.links) return keep(label);
       return keep('<a href="' + esc(u) + '"' + (title ? ' title="' + esc(title) + '"' : '') +
         '>' + label + '</a>');
     });
 
     s = s.replace(/<(https?:\/\/[^\s<>]+)>/g, function (_, url) {
+      if (!cfg.links) return keep(esc(url));
       return keep('<a href="' + esc(url) + '">' + esc(url) + '</a>');
     });
 
-    s = s.replace(/(^|[\s(])(https?:\/\/[^\s<>"')\]]+)/g, function (_, pre, url) {
+    if (cfg.autoLink && cfg.links) s = s.replace(/(^|[\s(])(https?:\/\/[^\s<>"')\]]+)/g, function (_, pre, url) {
       var tail = (url.match(/[.,;:!?]+$/) || [''])[0];
       if (tail) url = url.slice(0, -tail.length);
       return pre + keep('<a href="' + esc(url) + '">' + esc(url) + '</a>') + tail;
@@ -235,7 +254,7 @@ iframe{flex:1;width:100%;border:0;background:#fff;min-height:340px}
     heading: /^\s{0,3}(#{1,6})\s+(.+?)\s*#*\s*$/,
     hr: /^\s{0,3}([-*_])(\s*\1){2,}\s*$/,
     quote: /^\s{0,3}>\s?(.*)$/,
-    list: /^(\s*)([-*+]|\d+[.)])\s+(.*)$/,
+    list: /^(\s*)([-*+]|\d{1,3}\\?[.)]|[a-z][.)]|(?:ii|iii|iv|vi|vii|viii|ix)[.)])\s+(.*)$/,
     tableSep: /^\s*\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)*\|?\s*$/
   };
 
@@ -288,10 +307,16 @@ iframe{flex:1;width:100%;border:0;background:#fff;min-height:340px}
         if (nx && nx[1].length === base && /\d/.test(nx[2][0]) === ordered) { i = k; m = nx; }
       }
       if (!m || m[1].length !== base || /\d/.test(m[2][0]) !== ordered) break;
-      var item = '<p>' + inline(m[3], kb) + '</p>';
+      var item = cfg.listP ? '<p>' + inline(m[3], kb) + '</p>' : inline(m[3], kb);
       i++;
       while (i < lines.length) {
         var n = lines[i].match(RE.list);
+        if (!n && !lines[i].trim()) {            // blank lines, then a deeper list: it belongs to this item
+          var kk = i;
+          while (kk < lines.length && !lines[kk].trim()) kk++;
+          var nn = kk < lines.length ? lines[kk].match(RE.list) : null;
+          if (nn && nn[1].length > base) { i = kk; n = nn; }
+        }
         if (n && n[1].length > base) {
           var sub = parseList(lines, i, n[1].length, kb);
           item += '\n' + sub.html + '\n';
@@ -301,7 +326,7 @@ iframe{flex:1;width:100%;border:0;background:#fff;min-height:340px}
         var j = i;
         while (j < lines.length && !lines[j].trim()) j++;
         if (j < lines.length && !RE.list.test(lines[j]) && lines[j].search(/\S/) > base && !RE.fence.test(lines[j])) {
-          item += '\n<p>' + inline(lines[j].trim(), kb) + '</p>';   // indented continuation paragraph
+          item += cfg.listP ? '\n<p>' + inline(lines[j].trim(), kb) + '</p>' : ' ' + inline(lines[j].trim(), kb);   // indented continuation
           i = j + 1;
         } else break;
       }
@@ -471,8 +496,9 @@ iframe{flex:1;width:100%;border:0;background:#fff;min-height:340px}
         var lv = {};
         kids(e).forEach(function (l) {
           if (l.localName !== 'lvl') return;
-          var f = child(l, 'numFmt'), st = child(l, 'start');
-          lv[l.getAttribute('w:ilvl')] = { fmt: f ? f.getAttribute('w:val') : 'decimal', start: st ? +st.getAttribute('w:val') : 1 };
+          var f = child(l, 'numFmt'), st = child(l, 'start'), lp = child(l, 'pPr'), li = lp ? child(lp, 'ind') : null;
+          var lft = li ? (li.getAttribute('w:left') || li.getAttribute('w:start')) : null;
+          lv[l.getAttribute('w:ilvl')] = { fmt: f ? f.getAttribute('w:val') : 'decimal', start: st ? +st.getAttribute('w:val') : 1, left: lft ? +lft : null };
         });
         abs[e.getAttribute('w:abstractNumId')] = lv;
       } else if (e.localName === 'num') {
@@ -480,7 +506,7 @@ iframe{flex:1;width:100%;border:0;background:#fff;min-height:340px}
         nums[e.getAttribute('w:numId')] = a ? a.getAttribute('w:val') : null;
       }
     });
-    return function (numId, ilvl) { return (abs[nums[numId]] || {})[ilvl] || { fmt: 'bullet', start: 1 }; };
+    return function (numId, ilvl) { return (abs[nums[numId]] || {})[ilvl] || { fmt: 'bullet', start: 1, left: null }; };
   }
 
   // Reads one <w:r>: text, tabs, breaks, plus bold / italic / strike and the link it sits in.
@@ -585,18 +611,42 @@ iframe{flex:1;width:100%;border:0;background:#fff;min-height:340px}
   function escStart(t) {
     var lead = t.match(/^[ \t]*/)[0], rest = t.slice(lead.length);
     if (/^(#{1,6}\s|>|[-+]\s|[-_]{3,}\s*$)/.test(rest)) rest = '\\' + rest;
-    else rest = rest.replace(/^(\d+)([.)]\s)/, '$1\\$2');
     return lead + rest;
   }
 
   function paragraphMd(p, ctx) {
-    var pPr = child(p, 'pPr'), styleId = '', numPr = null;
-    if (pPr) { var ps = child(pPr, 'pStyle'); styleId = ps ? ps.getAttribute('w:val') : ''; numPr = child(pPr, 'numPr'); }
+    var pPr = child(p, 'pPr'), styleId = '', numPr = null, pLeft = null;
+    if (pPr) { var ps = child(pPr, 'pStyle'); styleId = ps ? ps.getAttribute('w:val') : ''; numPr = child(pPr, 'numPr');
+      var pi = child(pPr, 'ind'), pv = pi ? (pi.getAttribute('w:left') || pi.getAttribute('w:start')) : null;
+      if (pv) pLeft = +pv;
+    }
     ctx.images += p.getElementsByTagName('w:drawing').length + p.getElementsByTagName('w:pict').length;
     var runs = collectRuns(p, ctx, null, { fields: [] });
     var level = stripMarker(runs) || ctx.levels[styleId] || 0;
     if (!runs.map(function (r) { return r.text; }).join('').replace(/\s/g, '')) return { kind: 'empty' };
 
+    if (!level && !numPr) {
+      var plainTxt = runs.map(function (r) { return r.text; }).join('');
+      var tm = plainTxt.match(/^[\s\u00a0]*(\d{1,3}[.)]|[a-z][.)]|(?:ii|iii|iv|vi|vii|viii|ix)[.)]|[\u2022\u25cf\u25aa\u25e6\u25cb\u25a0\u25a1\u2013\u2014-])[\s\u00a0]+(?=\S)/);
+      if (tm) {
+        // typed markers: numbers make a numbered item; a. b. c. / i. ii. / bullets make nested bullets
+        var off = 0, mlen = tm[0].length;
+        runs.forEach(function (r) {
+          var len = r.text.length, x = 0, y = Math.min(len, mlen - off);
+          if (y > x) r.text = r.text.slice(y);
+          off += len;
+        });
+        var isNum = /^\d/.test(tm[1]), ts = ctx.stack, tl;
+        if (isNum) { var b0 = ts.length ? ts[0] : 0; ts.length = 0; ts.push(b0); tl = 0; }
+        else if (!ts.length) { ts.push(0); tl = 0; }
+        else if (ts.length === 1) { ts.push(ts[0] + 720); tl = 1; }
+        else tl = ts.length - 1;
+        if (ctx.cnt.length > tl + 1) ctx.cnt.length = tl + 1;
+        ctx.cnt[tl] = isNum ? (ctx.cnt[tl] === undefined ? parseInt(tm[1], 10) : ctx.cnt[tl] + 1) : 0;
+        var itemTxt = renderRuns(runs, false).trim();
+        if (itemTxt) return { kind: 'block', list: true, md: new Array(tl * 4 + 1).join(' ') + (isNum ? ctx.cnt[tl] + '. ' : '- ') + itemTxt };
+      }
+    }
     if (level) {
       var h = renderRuns(runs.map(function (r) { return { text: r.text, b: false, i: r.i, s: r.s, link: r.link }; }), false).trim();
       return h ? { kind: 'block', md: new Array(level + 1).join('#') + ' ' + h } : { kind: 'empty' };
@@ -605,13 +655,21 @@ iframe{flex:1;width:100%;border:0;background:#fff;min-height:340px}
       var idEl = child(numPr, 'numId'), lvEl = child(numPr, 'ilvl');
       var numId = idEl ? idEl.getAttribute('w:val') : '0', ilvl = lvEl ? +lvEl.getAttribute('w:val') : 0;
       if (numId && numId !== '0') {
-        var info = ctx.numFmt(numId, ilvl), key = numId + '|' + ilvl, bullet = info.fmt === 'bullet' || info.fmt === 'none';
-        Object.keys(ctx.counters).forEach(function (k) { var pr = k.split('|'); if (pr[0] === numId && +pr[1] > ilvl) delete ctx.counters[k]; });
-        ctx.counters[key] = key in ctx.counters ? ctx.counters[key] + 1 : info.start;
-        return { kind: 'block', list: true, md: new Array(ilvl * 4 + 1).join(' ') + (bullet ? '- ' : ctx.counters[key] + '. ') + renderRuns(runs, false).trim() };
+        // Word pasted from the web gives every item its own list, so the nesting depth is read from the indent.
+        var info = ctx.numFmt(numId, ilvl);
+        var left = pLeft !== null ? pLeft : (info.left != null ? info.left : ilvl * 720);
+        var st = ctx.stack;
+        while (st.length && st[st.length - 1] - left > 150) st.pop();
+        if (!st.length || left - st[st.length - 1] > 150) st.push(left);
+        var level = st.length - 1;
+        if (ctx.cnt.length > level + 1) ctx.cnt.length = level + 1;
+        ctx.cnt[level] = ctx.cnt[level] === undefined ? info.start : ctx.cnt[level] + 1;
+        // top level: numbered unless bullet; nested levels: bullets unless truly decimal (a., b., i. become bullets)
+        var ordered = level === 0 ? !(info.fmt === 'bullet' || info.fmt === 'none') : info.fmt === 'decimal';
+        return { kind: 'block', list: true, md: new Array(level * 4 + 1).join(' ') + (ordered ? ctx.cnt[level] + '. ' : '- ') + renderRuns(runs, false).trim() };
       }
     }
-    return { kind: 'block', md: escStart(renderRuns(runs, true).replace(/\s+$/, '')) };
+    return { kind: 'block', indent: pLeft || 0, md: escStart(renderRuns(runs, true).replace(/\s+$/, '')) };
   }
 
   function tableMd(tbl, ctx) {
@@ -648,42 +706,56 @@ iframe{flex:1;width:100%;border:0;background:#fff;min-height:340px}
     var rels = {};
     if (relXml) kids(parseXml(relXml).documentElement).forEach(function (r) { rels[r.getAttribute('Id')] = r.getAttribute('Target'); });
     var ctx = {
-      rels: rels, counters: {}, images: 0,
+      rels: rels, counters: {}, images: 0, stack: [], cnt: [],
       levels: stXml ? styleLevels(parseXml(stXml)) : {},
-      numFmt: numXml ? numberingInfo(parseXml(numXml)) : function () { return { fmt: 'bullet', start: 1 }; }
+      numFmt: numXml ? numberingInfo(parseXml(numXml)) : function () { return { fmt: 'bullet', start: 1, left: null }; }
     };
     var body = child(parseXml(docXml).documentElement, 'body');
     if (!body) throw new Error('This document has no content.');
 
-    var out = '', pend = 0, prevList = false;
+    var blocks = [], pend = 0;
     function add(md, isList) {
-      if (out) out += (isList && prevList && !pend ? '\n' : '\n\n') + new Array(pend + 1).join('\n');
-      out += md; pend = 0; prevList = !!isList;
+      var prev = blocks[blocks.length - 1];
+      var sep = !prev ? '' : (isList && prev.list && !pend ? '\n' : '\n\n' + new Array(pend + 1).join('\n'));
+      blocks.push({ sep: sep, md: md, list: !!isList });
+      pend = 0;
     }
     function handle(el) {
       if (el.localName === 'p') {
-        var r = paragraphMd(el, ctx);
-        if (r.kind === 'empty') pend++; else add(r.md, r.list);
+        var r = paragraphMd(el, ctx), last = blocks[blocks.length - 1];
+        if (r.kind === 'empty') pend++;
+        else if (!r.list && r.indent > 0 && last && last.list && !pend) {
+          // an indented line straight after a list item continues that item ("...provide the" / "following details:")
+          last.md += ' ' + r.md.replace(/ {2}\n/g, ' ').trim();
+        } else {
+          if (!r.list) { ctx.stack = []; ctx.cnt = []; }
+          add(r.md, r.list);
+        }
       } else if (el.localName === 'tbl') {
         var t = tableMd(el, ctx);
-        if (t) add(t, false);
+        if (t) { ctx.stack = []; ctx.cnt = []; add(t, false); }
       } else if (el.localName === 'sdt') {
         var c = child(el, 'sdtContent');
         if (c) kids(c).forEach(handle);
       }
     }
     kids(body).forEach(handle);
-    return { md: out, images: ctx.images };
+    return { md: blocks.map(function (b) { return b.sep + b.md; }).join(''), images: ctx.images };
   }
 
   /* ---------- UI ---------- */
   var $ = function (id) { return document.getElementById(id); };
   var input = $('input'), code = $('code'), preview = $('preview');
   var optFull = $('optFull'), optBreaks = $('optBreaks');
+  var optFmt = $('optFmt'), optLinks = $('optLinks'), optListP = $('optListP'), optAuto = $('optAuto'), preset = $('preset');
+  function bodyHtml() {
+    cfg.fmt = optFmt.checked; cfg.links = optLinks.checked; cfg.listP = optListP.checked; cfg.autoLink = optAuto.checked;
+    return convert(input.value, optBreaks.checked);
+  }
   var current = '', timer, fileLabel = '';
 
   function render() {
-    var body = convert(input.value, optBreaks.checked);
+    var body = bodyHtml();
     current = optFull.checked ? fullDocument(body) : body;
     code.value = current;
     preview.srcdoc = previewDocument(body || '<p style="opacity:.6">Your preview will appear here.</p>');
@@ -710,6 +782,12 @@ iframe{flex:1;width:100%;border:0;background:#fff;min-height:340px}
   input.addEventListener('input', schedule);
   optFull.addEventListener('change', render);
   optBreaks.addEventListener('change', render);
+  [optFmt, optLinks, optListP, optAuto].forEach(function (o) { o.addEventListener('change', render); });
+  preset.addEventListener('change', function () {
+    var promo = preset.value === 'promo';       // promo terms: plain text, simple <li> items, no links
+    optFmt.checked = !promo; optLinks.checked = !promo; optListP.checked = false; optAuto.checked = false;
+    render();
+  });
 
   $('btnSample').addEventListener('click', function () { input.value = SAMPLE; fileLabel = ''; render(); toast('Sample loaded'); });
   $('btnClear').addEventListener('click', function () { input.value = ''; fileLabel = ''; render(); input.focus(); });
@@ -728,7 +806,7 @@ iframe{flex:1;width:100%;border:0;background:#fff;min-height:340px}
 
   $('btnDownload').addEventListener('click', function () {
     if (!current) { toast('Nothing to download yet'); return; }
-    var body = convert(input.value, optBreaks.checked);
+    var body = bodyHtml();
     var blob = new Blob([fullDocument(body)], { type: 'text/html;charset=utf-8' });
     var a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
