@@ -326,7 +326,7 @@ select{font:inherit;padding:4px 8px;border:1px solid var(--line);border-radius:6
         var j = i;
         while (j < lines.length && !lines[j].trim()) j++;
         if (j < lines.length && !RE.list.test(lines[j]) && lines[j].search(/\S/) > base && !RE.fence.test(lines[j])) {
-          item += cfg.listP ? '\n<p>' + inline(lines[j].trim(), kb) + '</p>' : ' ' + inline(lines[j].trim(), kb);   // indented continuation
+          item += cfg.listP ? '\n<p>' + inline(lines[j].trim(), kb) + '</p>' : '<br>\n' + inline(lines[j].trim(), kb);   // indented continuation
           i = j + 1;
         } else break;
       }
@@ -636,6 +636,7 @@ select{font:inherit;padding:4px 8px;border:1px solid var(--line);border-radius:6
           if (y > x) r.text = r.text.slice(y);
           off += len;
         });
+        ctx.tableGap = false;
         var isNum = /^\d/.test(tm[1]), ts = ctx.stack, tl;
         if (isNum) { var b0 = ts.length ? ts[0] : 0; ts.length = 0; ts.push(b0); tl = 0; }
         else if (!ts.length) { ts.push(0); tl = 0; }
@@ -662,6 +663,9 @@ select{font:inherit;padding:4px 8px;border:1px solid var(--line);border-radius:6
         while (st.length && st[st.length - 1] - left > 150) st.pop();
         if (!st.length || left - st[st.length - 1] > 150) st.push(left);
         var level = st.length - 1;
+        // a table in the middle of a list does not restart the numbering (same Word list = keep counting)
+        if (ctx.tableGap) { if (ctx.lastNumId !== numId) ctx.cnt = []; ctx.tableGap = false; }
+        ctx.lastNumId = numId;
         if (ctx.cnt.length > level + 1) ctx.cnt.length = level + 1;
         ctx.cnt[level] = ctx.cnt[level] === undefined ? info.start : ctx.cnt[level] + 1;
         // top level: numbered unless bullet; nested levels: bullets unless truly decimal (a., b., i. become bullets)
@@ -717,7 +721,7 @@ select{font:inherit;padding:4px 8px;border:1px solid var(--line);border-radius:6
     function add(md, isList) {
       var prev = blocks[blocks.length - 1];
       var sep = !prev ? '' : (isList && prev.list && !pend ? '\n' : '\n\n' + new Array(pend + 1).join('\n'));
-      blocks.push({ sep: sep, md: md, list: !!isList });
+      blocks.push({ sep: sep, md: md, list: !!isList, ind: (md.match(/^ */) || [''])[0].length });
       pend = 0;
     }
     function handle(el) {
@@ -725,15 +729,17 @@ select{font:inherit;padding:4px 8px;border:1px solid var(--line);border-radius:6
         var r = paragraphMd(el, ctx), last = blocks[blocks.length - 1];
         if (r.kind === 'empty') pend++;
         else if (!r.list && r.indent > 0 && last && last.list && !pend) {
-          // an indented line straight after a list item continues that item ("...provide the" / "following details:")
-          last.md += ' ' + r.md.replace(/ {2}\n/g, ' ').trim();
+          // an indented line straight after a list item belongs to that item
+          var more = r.md.replace(/ {2}\n/g, ' ').trim();
+          if (/[.?!:;]\s*$/.test(last.md)) last.md += '\n' + new Array(last.ind + 5).join(' ') + more;  // its own paragraph inside the item (question / answer)
+          else last.md += ' ' + more;                                                                    // the sentence continues
         } else {
           if (!r.list) { ctx.stack = []; ctx.cnt = []; }
           add(r.md, r.list);
         }
       } else if (el.localName === 'tbl') {
         var t = tableMd(el, ctx);
-        if (t) { ctx.stack = []; ctx.cnt = []; add(t, false); }
+        if (t) { ctx.stack = []; ctx.tableGap = true; add(t, false); }
       } else if (el.localName === 'sdt') {
         var c = child(el, 'sdtContent');
         if (c) kids(c).forEach(handle);
