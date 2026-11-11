@@ -41,6 +41,9 @@ Individual switches (they can be changed after choosing a style)
                            Off = <li>text</li>   (default)
   Auto-link plain URLs     On  = https://... in text becomes a link.
                            Off = stays plain text (default).
+  Indent table code        On  = table HTML is written with indented lines
+                                 (<thead>, <tr>, <th>/<td> on their own lines).
+                           Off = compact table code (default).
   Full HTML page (no CSS)  On  = output includes <!DOCTYPE>, <head>, <body>.
                            Off = only the HTML fragment (default).
   Match pasted spacing     Keeps single line breaks (<br>), indentation and
@@ -87,8 +90,21 @@ Word files (.docx)
     - Nested lettered/roman items (a. b. c.) become bullets.
     - Typed numbers/letters/bullets ("7. ...", "a. ...", "- ...") are turned
       into real list items.
-    - An indented line right after a list item continues that item
-      (for example "...must provide the" + "following details:").
+    - An indented line right after a list item belongs to that item. If the
+      item does not end with punctuation, the line continues the sentence
+      ("...must provide the" + "following details:"). If it does (for
+      example a question followed by its answer), the line becomes its own
+      paragraph inside the item (<br>, or <p> when "Wrap list items in <p>"
+      is on).
+    - A table that is indented in Word and sits right after a list item is
+      placed INSIDE that item (<li>text<table>...</table></li>), so the
+      numbering carries on without a break. A table that is not indented
+      stays outside the list; the next list then continues the numbering
+      (<ol start="5">) when it is the same Word list.
+    - Bullets that sit at the same indent as the numbered item above them
+      are treated as that item's children (as in the Bibs promo document).
+    - A question followed by its answer on the next line: the answer follows
+      the question with <br> inside the same item.
   Not included
     - Images (the page tells you how many were skipped)
     - Underline, colors, highlights, text boxes, footnotes, headers/footers

@@ -92,6 +92,7 @@ select{font:inherit;padding:4px 8px;border:1px solid var(--line);border-radius:6
       <label><input type="checkbox" id="optLinks" checked> Keep links</label>
       <label><input type="checkbox" id="optListP"> Wrap list items in &lt;p&gt;</label>
       <label><input type="checkbox" id="optAuto"> Auto-link plain URLs</label>
+      <label><input type="checkbox" id="optTblIndent"> Indent table code</label>
       <label><input type="checkbox" id="optFull"> Full HTML page (no CSS)</label>
       <label><input type="checkbox" id="optBreaks"> Match pasted spacing (line breaks, indents, blank lines)</label>
     </div>
@@ -169,7 +170,7 @@ select{font:inherit;padding:4px 8px;border:1px solid var(--line);border-radius:6
   ].join('\n');
 
   // Output settings (read from the checkboxes before every conversion)
-  var cfg = { fmt: true, links: true, listP: false, autoLink: false };
+  var cfg = { fmt: true, links: true, listP: false, autoLink: false, tableIndent: false };
 
   /* ---------- Sanitizing helpers ---------- */
   function esc(s) {
@@ -292,6 +293,25 @@ select{font:inherit;padding:4px 8px;border:1px solid var(--line);border-radius:6
       RE.list.test(l) || isTableStart(lines, i);
   }
 
+  function parseTable(lines, i) {
+    var head = splitRow(lines[i]), ind = cfg.tableIndent, rows = [];
+    function cell(tag, txt) { return '<' + tag + '>' + inline(txt, false) + '</' + tag + '>'; }
+    function row(cells, tag, pad) {
+      if (!ind) return '<tr>' + cells.map(function (c) { return cell(tag, c); }).join('') + '</tr>';
+      return pad + '<tr>\n' + cells.map(function (c) { return pad + '  ' + cell(tag, c); }).join('\n') + '\n' + pad + '</tr>';
+    }
+    i += 2;
+    while (i < lines.length && lines[i].trim() && lines[i].indexOf('|') !== -1) {
+      var cells = splitRow(lines[i]);
+      while (cells.length < head.length) cells.push('');
+      rows.push(cells.slice(0, head.length));
+      i++;
+    }
+    var pad = ind ? '    ' : '', w = ind ? '  ' : '';
+    var body = rows.map(function (r) { return row(r, 'td', pad); }).join('\n');
+    return { next: i, html: '<table>\n' + w + '<thead>\n' + row(head, 'th', pad) + '\n' + w + '</thead>\n' + w + '<tbody>\n' + body + (rows.length ? '\n' : '') + w + '</tbody>\n</table>' };
+  }
+
   function parseList(lines, start, base, kb) {
     var first = lines[start].match(RE.list);
     var ordered = /\d/.test(first[2][0]);
@@ -325,8 +345,14 @@ select{font:inherit;padding:4px 8px;border:1px solid var(--line);border-radius:6
         }
         var j = i;
         while (j < lines.length && !lines[j].trim()) j++;
+        if (j < lines.length && lines[j].search(/\S/) > base && isTableStart(lines, j)) {   // indented table belongs to this item
+          var tb = parseTable(lines, j);
+          item += '\n' + tb.html + '\n';
+          i = tb.next;
+          continue;
+        }
         if (j < lines.length && !RE.list.test(lines[j]) && lines[j].search(/\S/) > base && !RE.fence.test(lines[j])) {
-          item += cfg.listP ? '\n<p>' + inline(lines[j].trim(), kb) + '</p>' : '<br>\n' + inline(lines[j].trim(), kb);   // indented continuation
+          item += cfg.listP ? '\n<p>' + inline(lines[j].trim(), kb) + '</p>' : '<br>' + inline(lines[j].trim(), kb);   // indented continuation
           i = j + 1;
         } else break;
       }
@@ -371,19 +397,8 @@ select{font:inherit;padding:4px 8px;border:1px solid var(--line);border-radius:6
         continue;
       }
       if (isTableStart(lines, i)) {
-        var head = splitRow(lines[i]);
-        function cell(tag, txt) {
-          return '<' + tag + '>' + inline(txt, false) + '</' + tag + '>';
-        }
-        var t = '<table>\n<thead>\n<tr>' + head.map(function (h, k) { return cell('th', h, k); }).join('') + '</tr>\n</thead>\n<tbody>\n';
-        i += 2;
-        while (i < lines.length && lines[i].trim() && lines[i].indexOf('|') !== -1) {
-          var cells = splitRow(lines[i]);
-          while (cells.length < head.length) cells.push('');
-          t += '<tr>' + cells.slice(0, head.length).map(function (c, k) { return cell('td', c, k); }).join('') + '</tr>\n';
-          i++;
-        }
-        out.push(t + '</tbody>\n</table>');
+        var tb0 = parseTable(lines, i);
+        out.push(tb0.html); i = tb0.next;
         continue;
       }
       if ((m = line.match(RE.list))) {
@@ -614,6 +629,21 @@ select{font:inherit;padding:4px 8px;border:1px solid var(--line);border-radius:6
     return lead + rest;
   }
 
+  // Works out the nesting depth of a list item from its indent and its type.
+  // Bullets that sit at the same indent as the numbered item above them are children of that item.
+  function placeList(st, left, kind) {
+    var TOL = 150, top;
+    while (st.length && st[st.length - 1].left - left > TOL) st.pop();
+    top = st[st.length - 1];
+    if (!top) { st.push({ left: left, kind: kind }); return 0; }
+    if (left - top.left > TOL) { st.push({ left: left, kind: kind }); return st.length - 1; }
+    if (top.kind === kind) return st.length - 1;
+    if (top.kind === 'num' && kind === 'bullet') { st.push({ left: left, kind: kind }); return st.length - 1; }
+    if (top.kind === 'bullet' && st.length > 1 && Math.abs(st[st.length - 2].left - left) <= TOL) { st.pop(); st[st.length - 1].kind = kind; return st.length - 1; }
+    top.kind = kind;
+    return st.length - 1;
+  }
+
   function paragraphMd(p, ctx) {
     var pPr = child(p, 'pPr'), styleId = '', numPr = null, pLeft = null;
     if (pPr) { var ps = child(pPr, 'pStyle'); styleId = ps ? ps.getAttribute('w:val') : ''; numPr = child(pPr, 'numPr');
@@ -638,14 +668,14 @@ select{font:inherit;padding:4px 8px;border:1px solid var(--line);border-radius:6
         });
         ctx.tableGap = false;
         var isNum = /^\d/.test(tm[1]), ts = ctx.stack, tl;
-        if (isNum) { var b0 = ts.length ? ts[0] : 0; ts.length = 0; ts.push(b0); tl = 0; }
-        else if (!ts.length) { ts.push(0); tl = 0; }
-        else if (ts.length === 1) { ts.push(ts[0] + 720); tl = 1; }
+        if (isNum) { var b0 = ts.length ? ts[0].left : 0; ts.length = 0; ts.push({ left: b0, kind: 'num' }); tl = 0; }
+        else if (!ts.length) { ts.push({ left: 0, kind: 'other' }); tl = 0; }
+        else if (ts.length === 1) { ts.push({ left: ts[0].left + 720, kind: 'bullet' }); tl = 1; }
         else tl = ts.length - 1;
         if (ctx.cnt.length > tl + 1) ctx.cnt.length = tl + 1;
         ctx.cnt[tl] = isNum ? (ctx.cnt[tl] === undefined ? parseInt(tm[1], 10) : ctx.cnt[tl] + 1) : 0;
         var itemTxt = renderRuns(runs, false).trim();
-        if (itemTxt) return { kind: 'block', list: true, md: new Array(tl * 4 + 1).join(' ') + (isNum ? ctx.cnt[tl] + '. ' : '- ') + itemTxt };
+        if (itemTxt) return { kind: 'block', list: true, left: pLeft !== null ? pLeft : 0, md: new Array(tl * 4 + 1).join(' ') + (isNum ? ctx.cnt[tl] + '. ' : '- ') + itemTxt };
       }
     }
     if (level) {
@@ -659,10 +689,7 @@ select{font:inherit;padding:4px 8px;border:1px solid var(--line);border-radius:6
         // Word pasted from the web gives every item its own list, so the nesting depth is read from the indent.
         var info = ctx.numFmt(numId, ilvl);
         var left = pLeft !== null ? pLeft : (info.left != null ? info.left : ilvl * 720);
-        var st = ctx.stack;
-        while (st.length && st[st.length - 1] - left > 150) st.pop();
-        if (!st.length || left - st[st.length - 1] > 150) st.push(left);
-        var level = st.length - 1;
+        var level = placeList(ctx.stack, left, info.fmt === 'decimal' ? 'num' : info.fmt === 'bullet' ? 'bullet' : 'other');
         // a table in the middle of a list does not restart the numbering (same Word list = keep counting)
         if (ctx.tableGap) { if (ctx.lastNumId !== numId) ctx.cnt = []; ctx.tableGap = false; }
         ctx.lastNumId = numId;
@@ -670,10 +697,10 @@ select{font:inherit;padding:4px 8px;border:1px solid var(--line);border-radius:6
         ctx.cnt[level] = ctx.cnt[level] === undefined ? info.start : ctx.cnt[level] + 1;
         // top level: numbered unless bullet; nested levels: bullets unless truly decimal (a., b., i. become bullets)
         var ordered = level === 0 ? !(info.fmt === 'bullet' || info.fmt === 'none') : info.fmt === 'decimal';
-        return { kind: 'block', list: true, md: new Array(level * 4 + 1).join(' ') + (ordered ? ctx.cnt[level] + '. ' : '- ') + renderRuns(runs, false).trim() };
+        return { kind: 'block', list: true, left: left, md: new Array(level * 4 + 1).join(' ') + (ordered ? ctx.cnt[level] + '. ' : '- ') + renderRuns(runs, false).trim() };
       }
     }
-    return { kind: 'block', indent: pLeft || 0, md: escStart(renderRuns(runs, true).replace(/\s+$/, '')) };
+    return { kind: 'block', indent: pLeft, md: escStart(renderRuns(runs, true).replace(/\s+$/, '')) };
   }
 
   function tableMd(tbl, ctx) {
@@ -718,28 +745,34 @@ select{font:inherit;padding:4px 8px;border:1px solid var(--line);border-radius:6
     if (!body) throw new Error('This document has no content.');
 
     var blocks = [], pend = 0;
-    function add(md, isList) {
+    function add(md, isList, left) {
       var prev = blocks[blocks.length - 1];
-      var sep = !prev ? '' : (isList && prev.list && !pend ? '\n' : '\n\n' + new Array(pend + 1).join('\n'));
-      blocks.push({ sep: sep, md: md, list: !!isList, ind: (md.match(/^ */) || [''])[0].length });
+      var sep = !prev ? '' : (isList && prev.list && !pend && !prev.noJoin ? '\n' : '\n\n' + new Array(pend + 1).join('\n'));
+      blocks.push({ sep: sep, md: md, list: !!isList, left: left, ind: (md.match(/^ */) || [''])[0].length });
       pend = 0;
     }
     function handle(el) {
       if (el.localName === 'p') {
         var r = paragraphMd(el, ctx), last = blocks[blocks.length - 1];
         if (r.kind === 'empty') pend++;
-        else if (!r.list && r.indent > 0 && last && last.list && !pend) {
+        else if (!r.list && typeof r.indent === 'number' && last && last.list && typeof last.left === 'number' && !pend &&
+                 r.indent >= last.left - 510 && !/^\*\*.*\*\*$/.test(r.md.trim())) {
           // an indented line straight after a list item belongs to that item
           var more = r.md.replace(/ {2}\n/g, ' ').trim();
           if (/[.?!:;]\s*$/.test(last.md)) last.md += '\n' + new Array(last.ind + 5).join(' ') + more;  // its own paragraph inside the item (question / answer)
           else last.md += ' ' + more;                                                                    // the sentence continues
         } else {
           if (!r.list) { ctx.stack = []; ctx.cnt = []; }
-          add(r.md, r.list);
+          add(r.md, r.list, r.left);
         }
       } else if (el.localName === 'tbl') {
-        var t = tableMd(el, ctx);
-        if (t) { ctx.stack = []; ctx.tableGap = true; add(t, false); }
+        var t = tableMd(el, ctx), last2 = blocks[blocks.length - 1], tp = child(el, 'tblPr'), ti = tp ? child(tp, 'tblInd') : null;
+        if (t && last2 && last2.list && ti && +ti.getAttribute('w:w') >= 200) {
+          // an indented table sits inside the list item above it, and the numbering carries on after it
+          var tpad = new Array(last2.ind + 5).join(' ');
+          last2.md += '\n\n' + t.split('\n').map(function (l) { return tpad + l; }).join('\n');
+          last2.noJoin = true; pend = 0;
+        } else if (t) { ctx.stack = []; ctx.tableGap = true; add(t, false); }
       } else if (el.localName === 'sdt') {
         var c = child(el, 'sdtContent');
         if (c) kids(c).forEach(handle);
@@ -753,9 +786,9 @@ select{font:inherit;padding:4px 8px;border:1px solid var(--line);border-radius:6
   var $ = function (id) { return document.getElementById(id); };
   var input = $('input'), code = $('code'), preview = $('preview');
   var optFull = $('optFull'), optBreaks = $('optBreaks');
-  var optFmt = $('optFmt'), optLinks = $('optLinks'), optListP = $('optListP'), optAuto = $('optAuto'), preset = $('preset');
+  var optFmt = $('optFmt'), optLinks = $('optLinks'), optListP = $('optListP'), optAuto = $('optAuto'), optTblIndent = $('optTblIndent'), preset = $('preset');
   function bodyHtml() {
-    cfg.fmt = optFmt.checked; cfg.links = optLinks.checked; cfg.listP = optListP.checked; cfg.autoLink = optAuto.checked;
+    cfg.fmt = optFmt.checked; cfg.links = optLinks.checked; cfg.listP = optListP.checked; cfg.autoLink = optAuto.checked; cfg.tableIndent = optTblIndent.checked;
     return convert(input.value, optBreaks.checked);
   }
   var current = '', timer, fileLabel = '';
@@ -788,10 +821,10 @@ select{font:inherit;padding:4px 8px;border:1px solid var(--line);border-radius:6
   input.addEventListener('input', schedule);
   optFull.addEventListener('change', render);
   optBreaks.addEventListener('change', render);
-  [optFmt, optLinks, optListP, optAuto].forEach(function (o) { o.addEventListener('change', render); });
+  [optFmt, optLinks, optListP, optAuto, optTblIndent].forEach(function (o) { o.addEventListener('change', render); });
   preset.addEventListener('change', function () {
     var promo = preset.value === 'promo';       // promo terms: plain text, simple <li> items, no links
-    optFmt.checked = !promo; optLinks.checked = !promo; optListP.checked = false; optAuto.checked = false;
+    optFmt.checked = !promo; optLinks.checked = !promo; optListP.checked = false; optAuto.checked = false; optTblIndent.checked = false;
     render();
   });
 
